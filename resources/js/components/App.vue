@@ -1,0 +1,680 @@
+<template>
+  <div class="app-container">
+    <!-- 头部 -->
+    <div class="header">
+      <label>名字</label>
+      <input 
+        type="text" 
+        v-model="userName" 
+        @input="handleUserNameChange"
+        placeholder="请输入名字"
+      />
+    </div>
+
+    <!-- 主内容区 -->
+    <div class="main-content">
+      <!-- 左侧列表 -->
+      <div class="left-panel">
+        <button class="btn btn-yellow" @click="resetList">重置列表</button>
+        <table class="log-table">
+          <thead>
+            <tr>
+              <th>日期</th>
+              <th>工作时长</th>
+              <th>项目</th>
+              <th>请假</th>
+              <th>内容</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr 
+              v-for="log in logs" 
+              :key="log.id || log.tempId"
+              @click="selectLog(log)"
+              :class="{ active: selectedLog && (selectedLog.id || selectedLog.tempId) === (log.id || log.tempId) }"
+            >
+              <td>{{ formatDate(log.days) }}</td>
+              <td>{{ log.hours }}</td>
+              <td>{{ log.project_name || '-' }}</td>
+              <td>{{ log.remark || '-' }}</td>
+              <td>{{ log.content || '-' }}</td>
+              <td>
+                <button 
+                  class="btn btn-pink btn-icon"
+                  @click.stop="deleteLog(log)"
+                >
+                  🗑️
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- 右侧表单 -->
+      <div class="right-panel" v-if="selectedLog">
+        <form @submit.prevent="saveLog">
+          <div class="form-group">
+            <label>日期</label>
+            <input 
+              type="date" 
+              v-model="selectedLog.days" 
+              required
+            />
+          </div>
+          
+          <div class="form-group">
+            <label>工作时长</label>
+            <input 
+              type="number" 
+              v-model.number="selectedLog.hours" 
+              min="0" 
+              max="24" 
+              step="0.5"
+              required
+            />
+          </div>
+          
+          <div class="form-group">
+            <label>项目</label>
+            <select v-model="selectedLog.project_name" required>
+              <option value="">请选择项目</option>
+              <option v-for="project in projectList" :key="project" :value="project">
+                {{ project }}
+              </option>
+            </select>
+          </div>
+          
+          <div class="form-group">
+            <label>请假</label>
+            <select v-model="selectedLog.remark">
+              <option value="">无</option>
+              <option value="年假">年假</option>
+              <option value="病假">病假</option>
+              <option value="事假">事假</option>
+              <option value="调休">调休</option>
+            </select>
+          </div>
+          
+          <div class="form-group">
+            <label>内容</label>
+            <input 
+              type="text" 
+              v-model="selectedLog.content" 
+              required
+            />
+          </div>
+          
+          <div class="form-actions">
+            <button type="submit" class="btn btn-blue">保存</button>
+            <button type="button" class="btn btn-light-blue" @click="createNew">创建</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- 底部操作区 -->
+    <div class="footer">
+      <button class="btn btn-green" @click="generateResult">生成结果</button>
+      <button class="btn btn-white" @click="saveAll">保存</button>
+    </div>
+
+    <!-- 结果展示区 -->
+    <div class="result-area" v-if="resultText">
+      <textarea 
+        v-model="resultText" 
+        readonly
+        class="result-textarea"
+      ></textarea>
+    </div>
+    
+    <!-- Toast 提示 -->
+    <transition name="toast-fade">
+      <div v-if="toastMessage" :class="['toast', `toast-${toastType}`]">
+        {{ toastMessage }}
+      </div>
+    </transition>
+  </div>
+</template>
+
+<script>
+import axios from 'axios';
+
+export default {
+  name: 'App',
+  data() {
+    return {
+      userName: '',
+      logs: [],
+      selectedLog: null,
+      resultText: '',
+      projectList: [
+        '项目1',
+        '项目A',
+        '项目B',
+        '项目C',
+      ],
+      tempIdCounter: 0,
+      originalLogIds: new Set(), // 保存重置列表时的原始ID，用于跟踪删除
+      toastMessage: '',
+      toastType: 'info', // info, success, error
+      toastTimer: null,
+    };
+  },
+  methods: {
+    showToast(message, type = 'info') {
+      // 清除之前的定时器
+      if (this.toastTimer) {
+        clearTimeout(this.toastTimer);
+      }
+      
+      this.toastMessage = message;
+      this.toastType = type;
+      
+      // 2秒后自动消失
+      this.toastTimer = setTimeout(() => {
+        this.toastMessage = '';
+        this.toastTimer = null;
+      }, 2000);
+    },
+    
+    formatDate(date) {
+      if (!date) return '-';
+      const d = new Date(date);
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    },
+    
+    async handleUserNameChange() {
+      // 名字改变时不清空列表，只有点击重置列表才加载
+    },
+    
+    async resetList() {
+      if (!this.userName) {
+        this.showToast('请先输入名字', 'error');
+        return;
+      }
+      
+      try {
+        // 计算当前周的日期范围（周一到周日）
+        const today = new Date();
+        const dayOfWeek = today.getDay();
+        const monday = new Date(today);
+        monday.setDate(today.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1));
+        monday.setHours(0, 0, 0, 0);
+        
+        const sunday = new Date(monday);
+        sunday.setDate(monday.getDate() + 6);
+        sunday.setHours(23, 59, 59, 999);
+        
+        // 从数据库拉取当前周的数据
+        const response = await axios.get('/api/daily-logs', {
+          params: { 
+            user_name: this.userName,
+            start_date: monday.toISOString().split('T')[0],
+            end_date: sunday.toISOString().split('T')[0]
+          }
+        });
+        
+        // 确保 dbLogs 是一个数组
+        let dbLogs = [];
+        if (response.data) {
+          dbLogs = Array.isArray(response.data) ? response.data : [];
+        }
+        
+        // 保存原始ID集合，用于跟踪删除
+        this.originalLogIds = new Set(dbLogs.map(log => log.id).filter(id => id));
+        
+        // 创建当前周7天的数据，如果有数据库记录则使用数据库记录，否则创建空记录
+        this.logs = [];
+        for (let i = 0; i < 7; i++) {
+          const date = new Date(monday);
+          date.setDate(monday.getDate() + i);
+          const dateStr = date.toISOString().split('T')[0];
+          
+          // 查找该日期是否已有数据库记录
+          const existingLog = dbLogs.find(log => log.days === dateStr);
+          
+          if (existingLog) {
+            // 使用数据库记录
+            this.logs.push({
+              ...existingLog,
+              user_name: this.userName,
+            });
+          } else {
+            // 创建空记录
+            this.logs.push({
+              tempId: ++this.tempIdCounter,
+              user_name: this.userName,
+              project_name: '',
+              days: dateStr,
+              hours: 8,
+              content: '',
+              remark: null,
+            });
+          }
+        }
+        
+        this.selectedLog = null;
+      } catch (error) {
+        console.error('重置列表失败:', error);
+        this.showToast('重置列表失败: ' + (error.response?.data?.message || error.message), 'error');
+      }
+    },
+    
+    selectLog(log) {
+      this.selectedLog = { ...log };
+    },
+    
+    saveLog() {
+      // 只更新页面数据，不保存到数据库
+      if (!this.selectedLog) return;
+      
+      // 更新列表中的记录
+      const index = this.logs.findIndex(l => 
+        (l.id && l.id === this.selectedLog.id) || 
+        (l.tempId && l.tempId === this.selectedLog.tempId)
+      );
+      
+      if (index !== -1) {
+        // 直接更新记录，保留id或tempId
+        Object.assign(this.logs[index], this.selectedLog);
+      }
+      
+      // 更新selectedLog引用
+      this.selectedLog = { ...this.logs[index] };
+    },
+    
+    createNew() {
+      if (!this.selectedLog) return;
+      
+      const newLog = {
+        tempId: ++this.tempIdCounter,
+        user_name: this.userName,
+        project_name: '',
+        days: this.selectedLog.days,
+        hours: 8,
+        content: '',
+        remark: null,
+      };
+      
+      this.logs.push(newLog);
+      this.selectedLog = { ...newLog };
+    },
+    
+    deleteLog(log) {
+      // 只从页面删除，不删除数据库中的记录
+      const index = this.logs.findIndex(l => 
+        (l.id && l.id === log.id) || 
+        (l.tempId && l.tempId === log.tempId)
+      );
+      
+      if (index !== -1) {
+        this.logs.splice(index, 1);
+        this.showToast('记录已删除', 'info');
+      }
+      
+      if (this.selectedLog && 
+          ((this.selectedLog.id && this.selectedLog.id === log.id) ||
+           (this.selectedLog.tempId && this.selectedLog.tempId === log.tempId))) {
+        this.selectedLog = null;
+      }
+    },
+    
+    generateResult() {
+      if (this.logs.length === 0) {
+        this.showToast('没有数据可生成', 'error');
+        return;
+      }
+      
+      const sortedLogs = [...this.logs].sort((a, b) => {
+        return new Date(a.days) - new Date(b.days);
+      });
+      
+      let result = `周报 - ${this.userName}\n\n`;
+      
+      sortedLogs.forEach(log => {
+        const date = this.formatDate(log.days);
+        result += `${date} (${log.hours}小时)\n`;
+        result += `项目: ${log.project_name || '-'}\n`;
+        if (log.remark) {
+          result += `请假: ${log.remark}\n`;
+        }
+        result += `内容: ${log.content || '-'}\n\n`;
+      });
+      
+      this.resultText = result;
+    },
+    
+    async saveAll() {
+      if (!this.userName) {
+        this.showToast('请先输入名字', 'error');
+        return;
+      }
+      
+      try {
+        // 获取当前列表中的所有ID
+        const currentLogIds = new Set(
+          this.logs.map(log => log.id).filter(id => id)
+        );
+        
+        // 找出被删除的记录（原来有但现在没有的）
+        const deletedIds = Array.from(this.originalLogIds).filter(
+          id => !currentLogIds.has(id)
+        );
+        
+        // 删除记录
+        for (const id of deletedIds) {
+          try {
+            await axios.delete(`/api/daily-logs/${id}`);
+          } catch (error) {
+            console.error(`删除记录 ${id} 失败:`, error);
+          }
+        }
+        
+        // 处理新增和更新的记录
+        const logsToSave = [];
+        const logsToUpdate = [];
+        
+        for (const log of this.logs) {
+          // 只保存有项目名称和内容的记录
+          if (!log.project_name || !log.content) {
+            continue;
+          }
+          
+          const logData = {
+            user_name: this.userName,
+            project_name: log.project_name,
+            days: log.days,
+            hours: log.hours,
+            content: log.content,
+            remark: log.remark || null,
+          };
+          
+          if (log.id) {
+            // 更新现有记录
+            logsToUpdate.push({ id: log.id, ...logData });
+          } else {
+            // 新增记录
+            logsToSave.push(logData);
+          }
+        }
+        
+        // 批量创建新记录
+        if (logsToSave.length > 0) {
+          await axios.post('/api/daily-logs/batch', {
+            user_name: this.userName,
+            logs: logsToSave,
+          });
+        }
+        
+        // 更新现有记录
+        for (const logData of logsToUpdate) {
+          const { id, ...data } = logData;
+          await axios.put(`/api/daily-logs/${id}`, data);
+        }
+        
+        const totalChanges = deletedIds.length + logsToSave.length + logsToUpdate.length;
+        if (totalChanges > 0) {
+          this.showToast(`保存成功！删除 ${deletedIds.length} 条，新增 ${logsToSave.length} 条，更新 ${logsToUpdate.length} 条`, 'success');
+          // 重新加载列表以同步数据库中的ID
+          await this.resetList();
+        } else {
+          this.showToast('没有需要保存的更改', 'info');
+        }
+      } catch (error) {
+        console.error('保存失败:', error);
+        this.showToast('保存失败: ' + (error.response?.data?.message || error.message), 'error');
+      }
+    },
+  },
+};
+</script>
+
+<style>
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  background-color: #f5f5f5;
+}
+
+.app-container {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.header {
+  background: white;
+  padding: 20px;
+  border-radius: 8px;
+  margin-bottom: 20px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.header label {
+  margin-right: 10px;
+  font-weight: 500;
+}
+
+.header input {
+  padding: 8px 12px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 14px;
+  width: 200px;
+}
+
+.main-content {
+  display: flex;
+  gap: 20px;
+  margin-bottom: 20px;
+}
+
+.left-panel {
+  flex: 1;
+  background: white;
+  padding: 20px;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.right-panel {
+  flex: 1;
+  background: white;
+  padding: 20px;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.btn {
+  padding: 10px 20px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+.btn:hover {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+
+.btn-yellow {
+  background-color: #ffc107;
+  color: #000;
+  margin-bottom: 15px;
+}
+
+.btn-blue {
+  background-color: #2196F3;
+  color: white;
+  margin-right: 10px;
+}
+
+.btn-light-blue {
+  background-color: #E3F2FD;
+  color: #2196F3;
+}
+
+.btn-pink {
+  background-color: #E91E63;
+  color: white;
+  padding: 5px 10px;
+}
+
+.btn-green {
+  background-color: #4CAF50;
+  color: white;
+  margin-right: 10px;
+}
+
+.btn-white {
+  background-color: white;
+  color: #333;
+  border: 1px solid #ddd;
+}
+
+.btn-icon {
+  font-size: 16px;
+  padding: 5px 10px;
+}
+
+.log-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.log-table th,
+.log-table td {
+  padding: 12px;
+  text-align: left;
+  border-bottom: 1px solid #eee;
+}
+
+.log-table th {
+  background-color: #f8f9fa;
+  font-weight: 600;
+  color: #333;
+}
+
+.log-table tbody tr {
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.log-table tbody tr:hover {
+  background-color: #f5f5f5;
+}
+
+.log-table tbody tr.active {
+  background-color: #e3f2fd;
+}
+
+.form-group {
+  margin-bottom: 20px;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 500;
+  color: #333;
+}
+
+.form-group input,
+.form-group select {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 14px;
+}
+
+.form-actions {
+  margin-top: 30px;
+  display: flex;
+  gap: 10px;
+}
+
+.footer {
+  background: white;
+  padding: 20px;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  margin-bottom: 20px;
+}
+
+.result-area {
+  background: white;
+  padding: 20px;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.result-textarea {
+  width: 100%;
+  min-height: 200px;
+  padding: 15px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 14px;
+  font-family: monospace;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+/* Toast 提示样式 */
+.toast {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  padding: 15px 20px;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  z-index: 9999;
+  max-width: 400px;
+  font-size: 14px;
+  font-weight: 500;
+  color: white;
+}
+
+.toast-info {
+  background-color: #2196F3;
+}
+
+.toast-success {
+  background-color: #4CAF50;
+}
+
+.toast-error {
+  background-color: #f44336;
+}
+
+/* Toast 动画 */
+.toast-fade-enter-active,
+.toast-fade-leave-active {
+  transition: opacity 0.3s, transform 0.3s;
+}
+
+.toast-fade-enter-from {
+  opacity: 0;
+  transform: translateX(100%);
+}
+
+.toast-fade-leave-to {
+  opacity: 0;
+  transform: translateX(100%);
+}
+</style>
+
